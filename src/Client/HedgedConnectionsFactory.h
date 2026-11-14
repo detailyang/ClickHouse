@@ -1,19 +1,20 @@
 #pragma once
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_DARWIN)
 
 #include <Common/TimerDescriptor.h>
 #include <Common/Epoll.h>
-#include <Common/FiberStack.h>
-#include <Common/Fiber.h>
+#include <Common/CoroutineStack.h>
+#include <Common/StackfulCoroutine.h>
 #include <Client/ConnectionEstablisher.h>
 #include <Client/ConnectionPoolWithFailover.h>
-#include <Core/Settings.h>
 #include <unordered_map>
 #include <memory>
 
 namespace DB
 {
+
+struct Settings;
 
 /** Class for establishing hedged connections with replicas.
   * The process of establishing connection is divided on stages, on each stage if
@@ -27,7 +28,7 @@ public:
     using ShuffledPool = ConnectionPoolWithFailover::Base::ShuffledPool;
     using TryResult = PoolWithFailoverBase<IConnectionPool>::TryResult;
 
-    enum class State
+    enum class State : uint8_t
     {
         READY,
         NOT_READY,
@@ -45,10 +46,17 @@ public:
         bool is_ready = false;
     };
 
-    HedgedConnectionsFactory(const ConnectionPoolWithFailoverPtr & pool_,
-                        const Settings * settings_,
-                        const ConnectionTimeouts & timeouts_,
-                        std::shared_ptr<QualifiedTableName> table_to_check_ = nullptr);
+    HedgedConnectionsFactory(
+        const ConnectionPoolWithFailoverPtr & pool_,
+        const Settings & settings_,
+        const ConnectionTimeouts & timeouts_,
+        UInt64 max_tries_,
+        bool fallback_to_stale_replicas_,
+        UInt64 max_parallel_replicas_,
+        bool skip_unavailable_shards_,
+        bool fail_if_replica_unprobed_,
+        std::shared_ptr<QualifiedTableName> table_to_check_ = nullptr,
+        GetPriorityForLoadBalancing::Func priority_func = {});
 
     /// Create and return active connections according to pool_mode.
     std::vector<Connection *> getManyConnections(PoolMode pool_mode, AsyncCallback async_callback = {});
@@ -74,6 +82,21 @@ public:
 
     /// Tell Factory to not return connections with two level aggregation incompatibility.
     void skipReplicasWithTwoLevelAggregationIncompatibility() { skip_replicas_with_two_level_aggregation_incompatibility = true; }
+
+    /// Whether a future hedge could select a replica whose capabilities are not yet known.
+    bool maySelectUnverifiedReplica() const
+    {
+        return hasEventsInProcess() || entries_count + replicas_in_process_count + failed_pools_count < shuffled_pools.size();
+    }
+
+    /// Whether a future hedge could select a replica that does not support the given query-plan
+    /// serialization version. Besides the pools that were never dialled (whose version cannot be
+    /// known here), this also accounts for the already-established usable but not up-to-date
+    /// replicas: they are kept inside the factory, never handed out as READY, and `setBestUsableReplica`
+    /// can still pick one of them later when `fallback_to_stale_replicas_for_distributed_queries` is on.
+    bool maySelectReplicaBelowQueryPlanSerializationVersion(UInt64 version) const;
+
+    size_t getFailedPoolsCount() const { return failed_pools_count; }
 
     ~HedgedConnectionsFactory();
 
@@ -109,7 +132,6 @@ private:
     bool isTwoLevelAggregationIncompatible(Connection * connection);
 
     const ConnectionPoolWithFailoverPtr pool;
-    const Settings * settings;
     const ConnectionTimeouts timeouts;
 
     std::vector<ShuffledPool> shuffled_pools;
@@ -127,13 +149,13 @@ private:
 
     std::shared_ptr<QualifiedTableName> table_to_check;
     int last_used_index = -1;
-    bool fallback_to_stale_replicas;
-    Epoll epoll;
-    Poco::Logger * log;
+    Epoll epoll{EpollNesting::ConnectionsFactory};
+    LoggerPtr log;
     std::string fail_messages;
 
     /// The maximum number of attempts to connect to replicas.
-    size_t max_tries;
+    const size_t max_tries;
+    const bool fallback_to_stale_replicas;
     /// Total number of established connections.
     size_t entries_count = 0;
     /// The number of established connections that are usable.
@@ -141,7 +163,7 @@ private:
     /// The number of established connections that are up to date.
     size_t up_to_date_count = 0;
     /// The number of failed connections (replica is considered failed after max_tries attempts to connect).
-    size_t failed_pools_count= 0;
+    size_t failed_pools_count = 0;
 
     /// The number of replicas that are in process of connection.
     size_t replicas_in_process_count = 0;
@@ -152,6 +174,10 @@ private:
     /// The number of requested in startNewConnection replicas (it's needed for
     /// checking the number of requested replicas that are still in process).
     size_t requested_connections_count = 0;
+
+    const size_t max_parallel_replicas = 1;
+    const bool skip_unavailable_shards = false;
+    const bool fail_if_replica_unprobed = false;
 };
 
 }

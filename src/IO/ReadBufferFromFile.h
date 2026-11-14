@@ -53,6 +53,8 @@ public:
     }
 
     size_t getFileOffsetOfBufferEnd() const override { return file_offset_of_buffer_end; }
+
+    bool isRegularLocalFile(size_t * /* out_view_offset */) override { return true; }
 };
 
 
@@ -97,12 +99,15 @@ public:
     {
         file = OpenedFileCache::instance().get(file_name, flags);
         fd = file->getFD();
+        enableOSPageCacheReadsDetection(flags);
     }
 
     std::string getFileName() const override
     {
         return file_name;
     }
+
+    bool isRegularLocalFile(size_t * /* out_view_offset */) override { return true; }
 };
 
 }

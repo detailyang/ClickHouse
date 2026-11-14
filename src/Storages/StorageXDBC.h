@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Interpreters/SecretArgumentsSpec.h>
 #include <Storages/StorageURL.h>
 #include <BridgeHelper/XDBCBridgeHelper.h>
 
@@ -19,7 +20,8 @@ namespace DB
 class StorageXDBC : public IStorageURLBase
 {
 public:
-    Pipe read(
+    void read(
+        QueryPlan & query_plan,
         const Names & column_names,
         const StorageSnapshotPtr & storage_snapshot,
         SelectQueryInfo & query_info,
@@ -46,7 +48,7 @@ private:
     std::string remote_database_name;
     std::string remote_table_name;
 
-    Poco::Logger * log;
+    LoggerPtr log;
 
     std::string getReadMethod() const override;
 
@@ -54,21 +56,24 @@ private:
         const Names & column_names,
         const StorageSnapshotPtr & storage_snapshot,
         const SelectQueryInfo & query_info,
-        ContextPtr context,
+        const ContextPtr & context,
         QueryProcessingStage::Enum & processed_stage,
         size_t max_block_size) const override;
 
-    std::function<void(std::ostream &)> getReadPOSTDataCallback(
+    std::function<void(WriteBuffer &)> getReadPOSTDataCallback(
         const Names & column_names,
         const ColumnsDescription & columns_description,
         const SelectQueryInfo & query_info,
-        ContextPtr context,
+        const ContextPtr & context,
         QueryProcessingStage::Enum & processed_stage,
         size_t max_block_size) const override;
 
     Block getHeaderBlock(const Names & column_names, const StorageSnapshotPtr & storage_snapshot) const override;
 
-    bool supportsSubsetOfColumns() const override;
+    bool supportsSubsetOfColumns(const ContextPtr &) const override;
 };
+
+/// The `SecretArgumentsSpec` of `jdbc`, `odbc` and the `JDBC`/`ODBC` table engines.
+SecretArgumentsSpec xdbcSecretArguments();
 
 }

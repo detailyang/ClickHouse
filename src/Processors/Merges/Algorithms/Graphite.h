@@ -1,7 +1,9 @@
 #pragma once
 
+#include <Common/VectorWithMemoryTracking.h>
+#include <AggregateFunctions/IAggregateFunction_fwd.h>
+#include <Interpreters/Context_fwd.h>
 #include <Common/OptimizedRegularExpression.h>
-#include <AggregateFunctions/IAggregateFunction.h>
 
 /** Intended for implementation of "rollup" - aggregation (rounding) of older data
   *  for a table with Graphite data (Graphite is the system for time series monitoring).
@@ -88,6 +90,9 @@
   *     </default>
   * </graphite_rollup>
   */
+
+class SipHash;
+
 namespace DB::Graphite
 {
 
@@ -97,10 +102,11 @@ enum RuleType
     RuleTypeAll = 0,        // default, with regex, compatible with old scheme
     RuleTypePlain = 1,      // plain metrics, with regex, compatible with old scheme
     RuleTypeTagged = 2,     // tagged metrics, with regex, compatible with old scheme
-    RuleTypeTagList = 3     // tagged metrics, with regex (converted to  RuleTypeTagged from string like 'retention=10min ; env=(staging|prod)')
+    RuleTypeTagList = 3     // tagged metrics, with regex (converted to RuleTypeTagged from string like 'retention=10min ; env=(staging|prod)')
 };
 
 const String & ruleTypeStr(RuleType rule_type);
+std::string buildTaggedRegex(std::string regexp_str);
 
 struct Retention
 {
@@ -110,7 +116,7 @@ struct Retention
 
 bool operator==(const Retention & a, const Retention & b);
 
-using Retentions = std::vector<Retention>;
+using Retentions = VectorWithMemoryTracking<Retention>;
 
 std::ostream &operator<<(std::ostream & stream, const Retentions & a);
 
@@ -122,12 +128,13 @@ struct Pattern
     AggregateFunctionPtr function;
     Retentions retentions;    /// Must be ordered by 'age' descending.
     enum { TypeUndef, TypeRetention, TypeAggregation, TypeAll } type = TypeAll; /// The type of defined pattern, filled automatically
+    void updateHash(SipHash & hash) const;
 };
 
 bool operator==(const Pattern & a, const Pattern & b);
 std::ostream &operator<<(std::ostream & stream, const Pattern & a);
 
-using Patterns = std::vector<Pattern>;
+using Patterns = VectorWithMemoryTracking<Pattern>;
 using RetentionPattern = Pattern;
 using AggregationPattern = Pattern;
 
@@ -138,11 +145,14 @@ struct Params
     String time_column_name;
     String value_column_name;
     String version_column_name;
-    bool patterns_typed;
+    bool patterns_typed{};
     Graphite::Patterns patterns;
     Graphite::Patterns patterns_plain;
     Graphite::Patterns patterns_tagged;
+    void updateHash(SipHash & hash) const;
 };
+
+bool operator==(const Params & a, const Params & b);
 
 using RollupRule = std::pair<const RetentionPattern *, const AggregationPattern *>;
 

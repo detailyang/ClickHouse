@@ -8,6 +8,7 @@
 #include <Parsers/ASTSubquery.h>
 #include <Parsers/ASTTablesInSelectQuery.h>
 #include <Parsers/ASTInterpolateElement.h>
+#include <Parsers/ASTLiteral.h>
 
 namespace DB
 {
@@ -20,12 +21,13 @@ namespace ErrorCodes
 
 std::vector<String> RequiredSourceColumnsMatcher::extractNamesFromLambda(const ASTFunction & node)
 {
-    if (node.arguments->children.size() != 2)
+    /// `ASTFunction::arguments` is optional: a function written without parentheses has none.
+    if (!node.arguments || node.arguments->children.size() != 2)
         throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, "lambda requires two arguments");
 
     const auto * lambda_args_tuple = node.arguments->children[0]->as<ASTFunction>();
 
-    if (!lambda_args_tuple || lambda_args_tuple->name != "tuple")
+    if (!lambda_args_tuple || lambda_args_tuple->name != "tuple" || !lambda_args_tuple->arguments)
         throw Exception(ErrorCodes::TYPE_MISMATCH, "First argument of lambda must be a tuple");
 
     std::vector<String> names;
@@ -71,11 +73,6 @@ void RequiredSourceColumnsMatcher::visit(const ASTPtr & ast, Data & data)
     }
     if (auto * t = ast->as<ASTFunction>())
     {
-        /// "indexHint" is a special function for index analysis.
-        /// Everything that is inside it is not calculated. See KeyCondition
-        if (!data.visit_index_hint && t->name == "indexHint")
-            return;
-
         data.addColumnAliasIfAny(*ast);
         visit(*t, ast, data);
         return;
@@ -126,7 +123,7 @@ void RequiredSourceColumnsMatcher::visit(const ASTSelectQuery & select, const AS
 
         if (const auto * identifier = node->as<ASTIdentifier>())
             data.addColumnIdentifier(*identifier);
-        else
+        else if (!node->as<ASTLiteral>())
             data.addColumnAliasIfAny(*node);
     }
 

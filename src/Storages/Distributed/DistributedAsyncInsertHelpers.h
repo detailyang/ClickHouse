@@ -1,14 +1,16 @@
 #pragma once
 
-namespace Poco
-{
-class Logger;
-}
+#include <Common/Logger.h>
+#include <base/types.h>
+
+#include <utility>
+
 
 namespace DB
 {
 
 struct DistributedAsyncInsertHeader;
+class ClientInfo;
 class ReadBufferFromFile;
 class RemoteInserter;
 
@@ -25,11 +27,16 @@ class RemoteInserter;
 ///     and mark batch as broken.
 bool isDistributedSendBroken(int code, bool remote_error);
 
+/// The identity the shard authenticates a queued insert as (with the interserver `<secret>`): `initial_user`
+/// and the host of `initial_address`, which is checked against the allowed hosts of that user.
+/// A batch is sent with the `ClientInfo` of its first file, so all files of a batch must have the same identity.
+std::pair<String, String> getRemoteAuthenticationIdentity(const ClientInfo & client_info);
+
 void writeRemoteConvert(
     const DistributedAsyncInsertHeader & distributed_header,
     RemoteInserter & remote,
     bool compression_expected,
     ReadBufferFromFile & in,
-    Poco::Logger * log);
+    LoggerPtr log);
 
 }

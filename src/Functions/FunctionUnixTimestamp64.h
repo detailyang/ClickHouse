@@ -5,8 +5,9 @@
 #include <Functions/FunctionHelpers.h>
 #include <DataTypes/DataTypeDateTime64.h>
 #include <DataTypes/DataTypesNumber.h>
+#include <Core/DecimalFunctions.h>
 #include <Columns/ColumnsNumber.h>
-#include <Interpreters/Context.h>
+#include <Interpreters/Context_fwd.h>
 
 #include <base/arithmeticOverflow.h>
 
@@ -16,21 +17,23 @@ namespace DB
 
 namespace ErrorCodes
 {
-    extern const int NUMBER_OF_ARGUMENTS_DOESNT_MATCH;
-    extern const int ILLEGAL_TYPE_OF_ARGUMENT;
     extern const int DECIMAL_OVERFLOW;
     extern const int ILLEGAL_COLUMN;
+    extern const int ILLEGAL_TYPE_OF_ARGUMENT;
+    extern const int NUMBER_OF_ARGUMENTS_DOESNT_MATCH;
 }
 
 /// Cast DateTime64 to Int64 representation narrowed down (or scaled up) to any scale value defined in Impl.
-class FunctionToUnixTimestamp64 : public IFunction
+class FunctionToUnixTimestamp64 final : public IFunction
 {
 private:
-    size_t target_scale;
+    const size_t target_scale;
     const char * name;
+
 public:
     FunctionToUnixTimestamp64(size_t target_scale_, const char * name_)
-        : target_scale(target_scale_), name(name_)
+        : target_scale(target_scale_)
+        , name(name_)
     {
     }
 
@@ -40,11 +43,13 @@ public:
     bool isSuitableForShortCircuitArgumentsExecution(const DataTypesWithConstInfo & /*arguments*/) const override { return false; }
     bool useDefaultImplementationForConstants() const override { return true; }
 
-    DataTypePtr getReturnTypeImpl(const ColumnsWithTypeAndName & arguments) const override
+    String getSignatureString() const override
     {
-        if (!isDateTime64(arguments[0].type))
-            throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT, "The only argument for function {} must be DateTime64", name);
+        return "(DateTime64) -> Int64";
+    }
 
+    DataTypePtr getReturnTypeForDefaultImplementationForDynamic() const override
+    {
         return std::make_shared<DataTypeInt64>();
     }
 
@@ -95,18 +100,15 @@ public:
 };
 
 
-class FunctionFromUnixTimestamp64 : public IFunction
+class FunctionFromUnixTimestamp64 final : public IFunction
 {
 private:
-    size_t target_scale;
+    const size_t target_scale;
     const char * name;
     const bool allow_nonconst_timezone_arguments;
+
 public:
-    FunctionFromUnixTimestamp64(size_t target_scale_, const char * name_, ContextPtr context)
-        : target_scale(target_scale_)
-        , name(name_)
-        , allow_nonconst_timezone_arguments(context->getSettings().allow_nonconst_timezone_arguments)
-    {}
+    FunctionFromUnixTimestamp64(size_t target_scale_, const char * name_, ContextPtr context);
 
     String getName() const override { return name; }
     size_t getNumberOfArguments() const override { return 0; }
@@ -114,6 +116,10 @@ public:
     bool isSuitableForShortCircuitArgumentsExecution(const DataTypesWithConstInfo & /*arguments*/) const override { return false; }
     bool useDefaultImplementationForConstants() const override { return true; }
 
+    /// Not declarative: the timezone argument's constness requirement is
+    /// gated by the `allow_nonconst_timezone_arguments` setting, which the DSL
+    /// cannot express. With the setting enabled, a non-constant timezone is
+    /// accepted and the result becomes tz-less `DateTime64`.
     DataTypePtr getReturnTypeImpl(const ColumnsWithTypeAndName & arguments) const override
     {
         if (arguments.empty() || arguments.size() > 2)
@@ -135,7 +141,7 @@ public:
         const auto & src = arguments[0];
         const auto & col = *src.column;
 
-        if (!checkAndGetColumn<ColumnVector<T>>(col))
+        if (!checkAndGetColumn<ColumnVector<T>>(&col))
             return false;
 
         auto & result_data = result_column->getData();

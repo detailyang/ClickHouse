@@ -1,14 +1,15 @@
-option(ENABLE_THRIFT "Enable Thrift" ${ENABLE_LIBRARIES})
-
-if (NOT ENABLE_THRIFT)
-    message (STATUS "Not using thrift")
-    return()
-endif()
-
 set(LIBRARY_DIR "${ClickHouse_SOURCE_DIR}/contrib/thrift/lib/cpp")
-set(thriftcpp_SOURCES
+
+# Enough to (de)serialize Thrift structures in memory: no networking, servers, or SSL.
+# This is all the native Parquet reader and writer need, so it is available regardless of `ENABLE_THRIFT`.
+set(thriftcpp_minimal_SOURCES
         "${LIBRARY_DIR}/src/thrift/TApplicationException.cpp"
         "${LIBRARY_DIR}/src/thrift/TOutput.cpp"
+        "${LIBRARY_DIR}/src/thrift/protocol/TProtocol.cpp"
+        "${LIBRARY_DIR}/src/thrift/transport/TTransportException.cpp"
+        "${LIBRARY_DIR}/src/thrift/transport/TBufferTransports.cpp"
+        )
+set(thriftcpp_SOURCES
         "${LIBRARY_DIR}/src/thrift/async/TAsyncChannel.cpp"
         "${LIBRARY_DIR}/src/thrift/async/TAsyncProtocolProcessor.cpp"
         "${LIBRARY_DIR}/src/thrift/async/TConcurrentClientSyncInfo.h"
@@ -20,8 +21,6 @@ set(thriftcpp_SOURCES
         "${LIBRARY_DIR}/src/thrift/protocol/TDebugProtocol.cpp"
         "${LIBRARY_DIR}/src/thrift/protocol/TJSONProtocol.cpp"
         "${LIBRARY_DIR}/src/thrift/protocol/TMultiplexedProtocol.cpp"
-        "${LIBRARY_DIR}/src/thrift/protocol/TProtocol.cpp"
-        "${LIBRARY_DIR}/src/thrift/transport/TTransportException.cpp"
         "${LIBRARY_DIR}/src/thrift/transport/TFDTransport.cpp"
         "${LIBRARY_DIR}/src/thrift/transport/TSimpleFileTransport.cpp"
         "${LIBRARY_DIR}/src/thrift/transport/THttpTransport.cpp"
@@ -31,7 +30,6 @@ set(thriftcpp_SOURCES
         "${LIBRARY_DIR}/src/thrift/transport/TSocketPool.cpp"
         "${LIBRARY_DIR}/src/thrift/transport/TServerSocket.cpp"
         "${LIBRARY_DIR}/src/thrift/transport/TTransportUtils.cpp"
-        "${LIBRARY_DIR}/src/thrift/transport/TBufferTransports.cpp"
         "${LIBRARY_DIR}/src/thrift/transport/SocketCommon.cpp"
         "${LIBRARY_DIR}/src/thrift/transport/TWebSocketServer.cpp"
         "${LIBRARY_DIR}/src/thrift/server/TConnectedClient.cpp"
@@ -46,8 +44,6 @@ set(thriftcpp_threads_SOURCES
         "${LIBRARY_DIR}/src/thrift/concurrency/Monitor.cpp"
         "${LIBRARY_DIR}/src/thrift/concurrency/Mutex.cpp"
         )
-
-include("${ClickHouse_SOURCE_DIR}/contrib/thrift/build/cmake/ConfigureChecks.cmake") # makes config.h
 
 set (HAVE_ARPA_INET_H 1)
 set (HAVE_FCNTL_H 1)
@@ -81,16 +77,22 @@ if (OS_LINUX AND NOT USE_MUSL)
     set (STRERROR_R_CHAR_P 1)
 endif ()
 
-#set(PACKAGE ${PACKAGE_NAME})
-#set(PACKAGE_STRING "${PACKAGE_NAME} ${PACKAGE_VERSION}")
-#set(VERSION ${thrift_VERSION})
-
 # generate a config.h file
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/build/cmake/config.h.in" "${CMAKE_CURRENT_BINARY_DIR}/thrift/config.h")
 
 include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 
+add_library(_thrift_minimal ${thriftcpp_minimal_SOURCES})
+add_library(ch_contrib::thrift_minimal ALIAS _thrift_minimal)
+target_include_directories(_thrift_minimal SYSTEM PUBLIC "${ClickHouse_SOURCE_DIR}/contrib/thrift/lib/cpp/src" ${CMAKE_CURRENT_BINARY_DIR})
+
+option(ENABLE_THRIFT "Enable Thrift" ${ENABLE_LIBRARIES})
+
+if (NOT ENABLE_THRIFT)
+    message (STATUS "Not using thrift")
+    return()
+endif()
+
 add_library(_thrift ${thriftcpp_SOURCES} ${thriftcpp_threads_SOURCES})
 add_library(ch_contrib::thrift ALIAS _thrift)
-target_include_directories(_thrift SYSTEM PUBLIC "${ClickHouse_SOURCE_DIR}/contrib/thrift/lib/cpp/src" ${CMAKE_CURRENT_BINARY_DIR})
-target_link_libraries (_thrift PUBLIC OpenSSL::SSL boost::headers_only)
+target_link_libraries (_thrift PUBLIC _thrift_minimal OpenSSL::SSL boost::headers_only)

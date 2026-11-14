@@ -1,8 +1,8 @@
 #pragma once
 
-#include "MaterializedPostgreSQLConsumer.h"
-#include "MaterializedPostgreSQLSettings.h"
+#include <Storages/PostgreSQL/MaterializedPostgreSQLConsumer.h>
 #include <Databases/PostgreSQL/fetchPostgreSQLTableStructure.h>
+#include <Core/BackgroundSchedulePool.h>
 #include <Core/PostgreSQL/Utils.h>
 #include <Parsers/ASTCreateQuery.h>
 
@@ -10,6 +10,7 @@
 namespace DB
 {
 
+struct MaterializedPostgreSQLSettings;
 class StorageMaterializedPostgreSQL;
 struct SettingChange;
 
@@ -21,9 +22,10 @@ public:
     using ConsumerPtr = std::shared_ptr<MaterializedPostgreSQLConsumer>;
 
     PostgreSQLReplicationHandler(
-            const String & replication_identifier,
             const String & postgres_database_,
-            const String & current_database_name_,
+            const String & postgres_table_,
+            const String & clickhouse_database_,
+            const String & clickhouse_uuid_,
             const postgres::ConnectionInfo & connection_info_,
             ContextPtr context_,
             bool is_attach_,
@@ -43,7 +45,10 @@ public:
     void addStorage(const std::string & table_name, StorageMaterializedPostgreSQL * storage);
 
     /// Fetch list of tables which are going to be replicated. Used for database engine.
-    std::set<String> fetchRequiredTables();
+    /// `nested_tables_on_disk` are the tables that were already replicated before the restart (their nested tables exist).
+    /// `published_but_not_materialized` receives the tables that are in the publication but are not replicated,
+    /// because they do not have nested tables (for example, their initial snapshot has failed).
+    std::set<String> fetchRequiredTables(const std::set<String> & nested_tables_on_disk, std::set<String> & published_but_not_materialized);
 
     /// Start replication setup immediately.
     void startSynchronization(bool throw_on_error);
@@ -55,6 +60,8 @@ public:
     void removeTableFromReplication(const String & postgres_table_name);
 
     void setSetting(const SettingChange & setting);
+
+    Strings getTableAllowedColumns(const std::string & table_name) const;
 
     void cleanupFunc();
 
@@ -68,6 +75,8 @@ private:
     void createPublicationIfNeeded(pqxx::nontransaction & tx);
 
     std::set<String> fetchTablesFromPublication(pqxx::work & tx);
+
+    void logPublishedButNotMaterialized(const std::set<String> & published_but_not_materialized) const;
 
     void dropPublication(pqxx::nontransaction & ntx);
 
@@ -85,6 +94,8 @@ private:
 
     /// Methods to manage replication.
 
+    void adoptLegacyReplicationIdentityIfNeeded(pqxx::nontransaction & tx);
+
     void checkConnectionAndStart();
 
     void consumerFunc();
@@ -93,7 +104,8 @@ private:
 
     StorageInfo loadFromSnapshot(postgres::Connection & connection, std::string & snapshot_name, const String & table_name, StorageMaterializedPostgreSQL * materialized_storage);
 
-    PostgreSQLTableStructurePtr fetchTableStructure(pqxx::ReplicationTransaction & tx, const String & table_name) const;
+    template<typename T>
+    PostgreSQLTableStructurePtr fetchTableStructure(T & tx, const String & table_name) const;
 
     String doubleQuoteWithSchema(const String & table_name) const;
 
@@ -101,7 +113,9 @@ private:
 
     void assertInitialized() const;
 
-    Poco::Logger * log;
+    void execWithRetryAndFaultInjection(postgres::Connection & connection, const std::function<void(pqxx::nontransaction &)> & exec) const;
+
+    LoggerPtr log;
 
     /// If it is not attach, i.e. a create query, then if publication already exists - always drop it.
     bool is_attach;
@@ -122,23 +136,40 @@ private:
     /// A coma-separated list of tables, which are going to be replicated for database engine. By default, a whole database is replicated.
     String tables_list;
 
+    /// The published tables of a whole-schema database that were never materialized, persisted together with `tables_list`
+    /// (see the setting `materialized_postgresql_unmaterialized_tables_list`).
+    String unmaterialized_tables_list;
+
     String schema_list;
 
     /// Schema can be as a part of table name, i.e. as a clickhouse table it is accessed like db.`schema.table`.
     /// This is possible to allow replicating tables from multiple schemas in the same MaterializedPostgreSQL database engine.
     mutable bool schema_as_a_part_of_table_name = false;
 
-    bool user_managed_slot = true;
-    String user_provided_snapshot;
+    /// Whether to map PostgreSQL `date`/`timestamp` to `Date32`/`DateTime64` (true) or to `Date`/`DateTime` (false).
+    const bool use_extended_date_and_time_types;
 
-    String replication_slot, publication_name;
+    const bool user_managed_slot;
+    const String user_provided_snapshot;
+    /// Not const: adoptLegacyReplicationIdentityIfNeeded() switches these to the legacy names once, on
+    /// attach of a deployment created before the generated names became schema-aware. They are never
+    /// modified after the replication consumer is created.
+    String replication_slot;
+    String tmp_replication_slot;
+    String publication_name;
+    /// The legacy, schema-unaware replication slot and publication names this configuration would have
+    /// used before the generated names became schema-aware. Equal to the current names when the engine
+    /// targets the default PostgreSQL schema, or (for the slot) when the slot name does not depend on
+    /// the schema (a user-managed slot or a unique replication consumer identifier).
+    const String legacy_replication_slot;
+    const String legacy_publication_name;
 
     /// Replication consumer. Manages decoding of replication stream and syncing into tables.
     ConsumerPtr consumer;
 
-    BackgroundSchedulePool::TaskHolder startup_task;
-    BackgroundSchedulePool::TaskHolder consumer_task;
-    BackgroundSchedulePool::TaskHolder cleanup_task;
+    BackgroundSchedulePoolTaskHolder startup_task;
+    BackgroundSchedulePoolTaskHolder consumer_task;
+    BackgroundSchedulePoolTaskHolder cleanup_task;
 
     const UInt64 reschedule_backoff_min_ms;
     const UInt64 reschedule_backoff_max_ms;
@@ -151,6 +182,8 @@ private:
     MaterializedStorages materialized_storages;
 
     bool replication_handler_initialized = false;
+
+    float fault_injection_probability = 0.;
 };
 
 }

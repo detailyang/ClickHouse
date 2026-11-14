@@ -12,15 +12,32 @@ namespace ErrorCodes
 
 /// See CustomWeekTransforms.h
 template <typename ToDataType, typename Transform>
-class FunctionCustomWeekToSomething : public IFunctionCustomWeek<Transform>
+class FunctionCustomWeekToSomething final : public IFunctionCustomWeek<Transform>
 {
 public:
     static FunctionPtr create(ContextPtr) { return std::make_shared<FunctionCustomWeekToSomething>(); }
 
-    DataTypePtr getReturnTypeImpl(const ColumnsWithTypeAndName & arguments) const override
+    String getSignatureString() const override
     {
-        this->checkArguments(arguments);
+        const String to = ToDataType{}.getName();
+        const String input_matcher = Transform::value_may_be_string
+            ? "Date | Date32 | DateTime | DateTime64 | String"
+            : "Date | Date32 | DateTime | DateTime64";
+        /// The optional `mode` and `timezone` arguments are positional (see
+        /// `IFunctionCustomWeek::checkArguments`): argument 2 is always the `week_mode` (`UInt8`)
+        /// and argument 3 the `timezone` (`String`). Both are always constant
+        /// (see `IFunctionCustomWeek::getArgumentsThatAreAlwaysConstant`), so encode them as `const`.
+        /// Spell the legal arities as explicit alternatives rather than two independent optional
+        /// groups `[const UInt8], [const String]`, which would let a two-argument call skip the
+        /// `UInt8` mode and bind a timezone string in the mode position — e.g.
+        /// `toYearWeek(ts, 'Asia/Istanbul')` must be rejected, not silently treated as a mode.
+        return "(" + input_matcher + ") -> " + to
+             + " OR (" + input_matcher + ", const UInt8) -> " + to
+             + " OR (" + input_matcher + ", const UInt8, const String) -> " + to;
+    }
 
+    DataTypePtr getReturnTypeForDefaultImplementationForDynamic() const override
+    {
         return std::make_shared<ToDataType>();
     }
 
@@ -30,24 +47,24 @@ public:
         WhichDataType which(from_type);
 
         if (which.isDate())
-            return CustomWeekTransformImpl<DataTypeDate, ToDataType>::execute(
-                arguments, result_type, input_rows_count, Transform{});
-        else if (which.isDate32())
-            return CustomWeekTransformImpl<DataTypeDate32, ToDataType>::execute(
-                arguments, result_type, input_rows_count, Transform{});
-        else if (which.isDateTime())
-            return CustomWeekTransformImpl<DataTypeDateTime, ToDataType>::execute(
-                arguments, result_type, input_rows_count, Transform{});
-        else if (which.isDateTime64())
-        {
+            return CustomWeekTransformImpl<DataTypeDate, ToDataType>::execute(arguments, result_type, input_rows_count, Transform{});
+        if (which.isDate32())
+            return CustomWeekTransformImpl<DataTypeDate32, ToDataType>::execute(arguments, result_type, input_rows_count, Transform{});
+        if (which.isDateTime())
+            return CustomWeekTransformImpl<DataTypeDateTime, ToDataType>::execute(arguments, result_type, input_rows_count, Transform{});
+        if (which.isDateTime64())
             return CustomWeekTransformImpl<DataTypeDateTime64, ToDataType>::execute(
-                arguments, result_type, input_rows_count,
+                arguments,
+                result_type,
+                input_rows_count,
                 TransformDateTime64<Transform>{assert_cast<const DataTypeDateTime64 *>(from_type)->getScale()});
-        }
-        else
-            throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
-                "Illegal type {} of argument of function {}",
-                arguments[0].type->getName(), this->getName());
+        if (Transform::value_may_be_string && which.isString())
+            return CustomWeekTransformImpl<DataTypeString, ToDataType>::execute(arguments, result_type, input_rows_count, Transform{});
+        throw Exception(
+            ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
+            "Illegal type {} of argument of function {}",
+            arguments[0].type->getName(),
+            this->getName());
     }
 
 };

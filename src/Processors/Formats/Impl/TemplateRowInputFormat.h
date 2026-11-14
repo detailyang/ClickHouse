@@ -1,14 +1,13 @@
 #pragma once
 
-#include <Core/Block.h>
 #include <Processors/Formats/RowInputFormatWithDiagnosticInfo.h>
+#include <Common/VectorWithMemoryTracking.h>
 #include <Processors/Formats/ISchemaReader.h>
 #include <Formats/FormatSettings.h>
 #include <Formats/ParsedTemplateFormatString.h>
 #include <Formats/SchemaInferenceUtils.h>
 #include <IO/ReadHelpers.h>
 #include <IO/PeekableReadBuffer.h>
-#include <Interpreters/Context.h>
 
 
 namespace DB
@@ -20,7 +19,7 @@ class TemplateRowInputFormat final : public RowInputFormatWithDiagnosticInfo
 {
     using EscapingRule = FormatSettings::EscapingRule;
 public:
-    TemplateRowInputFormat(const Block & header_, ReadBuffer & in_, const Params & params_,
+    TemplateRowInputFormat(SharedHeader header_, ReadBuffer & in_, const Params & params_,
                            FormatSettings settings_, bool ignore_spaces_,
                            ParsedTemplateFormatString format_, ParsedTemplateFormatString row_format_,
                            std::string row_between_delimiter);
@@ -28,9 +27,11 @@ public:
     String getName() const override { return "TemplateRowInputFormat"; }
 
     void resetParser() override;
+    void setReadBuffer(ReadBuffer & in_) override;
+    void resetReadBuffer() override;
 
 private:
-    TemplateRowInputFormat(const Block & header_, std::unique_ptr<PeekableReadBuffer> buf_, const Params & params_,
+    TemplateRowInputFormat(SharedHeader header_, std::unique_ptr<PeekableReadBuffer> buf_, const Params & params_,
                            FormatSettings settings_, bool ignore_spaces_,
                            ParsedTemplateFormatString format_, ParsedTemplateFormatString row_format_,
                            std::string row_between_delimiter);
@@ -50,8 +51,6 @@ private:
 
     bool isGarbageAfterField(size_t after_col_idx, ReadBuffer::Position pos) override;
 
-    void setReadBuffer(ReadBuffer & in_) override;
-
     std::unique_ptr<PeekableReadBuffer> buf;
     const DataTypes data_types;
 
@@ -61,12 +60,14 @@ private:
     const ParsedTemplateFormatString row_format;
 
     bool end_of_stream = false;
-    std::vector<size_t> always_default_columns;
+    VectorWithMemoryTracking<size_t> always_default_columns;
     const char default_csv_delimiter;
 
     const std::string row_between_delimiter;
 
     std::unique_ptr<TemplateFormatReader> format_reader;
+    /// Error recovery consumes the row-between delimiter before returning to normal row parsing.
+    bool row_between_delimiter_already_skipped = false;
 };
 
 class TemplateFormatReader
@@ -84,13 +85,13 @@ public:
 
     void readPrefix();
     void skipField(EscapingRule escaping_rule);
-    inline void skipSpaces() { if (ignore_spaces) skipWhitespaceIfAny(*buf); }
+    void skipSpaces() { if (ignore_spaces) skipWhitespaceIfAny(*buf); }
 
     template <typename ReturnType = void>
     ReturnType tryReadPrefixOrSuffix(size_t & input_part_beg, size_t input_part_end);
     bool checkForSuffix();
 
-    void setReadBuffer(PeekableReadBuffer & buf_) { buf = &buf_; }
+    void setReadBuffer(PeekableReadBuffer & buf_) { buf = &buf_; row_num = 0; }
 
     void skipDelimiter(size_t index);
     void skipRowEndDelimiter();
@@ -106,10 +107,10 @@ private:
     const std::string row_between_delimiter;
     const FormatSettings & format_settings;
     size_t format_data_idx;
-    size_t row_num;
+    size_t row_num{};
 };
 
-class TemplateSchemaReader : public IRowSchemaReader
+class TemplateSchemaReader final : public IRowSchemaReader
 {
 public:
     TemplateSchemaReader(ReadBuffer & in_,

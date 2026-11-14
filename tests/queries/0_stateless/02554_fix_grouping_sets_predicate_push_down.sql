@@ -1,3 +1,9 @@
+-- Tags: no-object-storage
+
+-- Specific value doesn't matter, we just need it to be fixed, because it is a part of `EXPLAIN PIPELINE` output.
+SET max_threads = 8;
+SET optimize_move_to_prewhere = 1;
+
 DROP TABLE IF EXISTS test_grouping_sets_predicate;
 
 CREATE TABLE test_grouping_sets_predicate
@@ -26,7 +32,7 @@ FROM
         SELECT
             day_,
             type_1
-        FROM test_grouping_sets_predicate 
+        FROM test_grouping_sets_predicate
         WHERE day_ = '2023-01-05'
         GROUP BY
             GROUPING SETS (
@@ -38,6 +44,8 @@ WHERE type_1 = 'all';
 
 SELECT '';
 SELECT '---Explain Pipeline---';
+
+-- Query plan with analyzer has less Filter steps (which is more optimal)
 EXPLAIN PIPELINE
 SELECT *
 FROM
@@ -58,7 +66,7 @@ FROM
                 (day_))
     ) AS t
 )
-WHERE type_1 = 'all';
+WHERE type_1 = 'all' settings query_plan_merge_filters=1; -- CI may inject False; separate filters change pipeline structure
 
 SELECT '';
 SELECT '---Result---';
@@ -85,6 +93,8 @@ WHERE type_1 = 'all';
 
 SELECT '';
 SELECT '---Explain Pipeline---';
+
+-- Query plan with analyzer has less Filter steps (which is more optimal)
 EXPLAIN PIPELINE
 SELECT *
 FROM
@@ -104,6 +114,6 @@ FROM
                 (day_))
     ) AS t
 )
-WHERE day_ = '2023-01-05';
+WHERE day_ = '2023-01-05' settings query_plan_merge_filters=1; -- CI may inject False; separate filters change pipeline structure
 
 DROP TABLE test_grouping_sets_predicate;
